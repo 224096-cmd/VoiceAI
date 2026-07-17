@@ -1,0 +1,19 @@
+{
+  "name": "floral-mouse-902c",
+  "compatibility_date": "2026-07-12",
+  "main": "worker.js",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "kv_namespaces": [
+    { "binding": "VOICEAI_KV", "id": "b2312a60c58b49099e31c4723c4adc64" }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "VAPID_PUBLIC_KEY": "BPL2Tzy_2Uzkxqq-FnZ5magpsBH-DJLRVYu0M9oLqen8EScOubmitEziOVrgaWBha_0JuPDCcvaDLKvlPZBV4KE",
+    "VAPID_SUBJECT": "mailto:224096@m.mie-u.ac.jp"
+  }
+}
