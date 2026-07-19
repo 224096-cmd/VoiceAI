@@ -3,11 +3,23 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
 <url>
-<loc>https://floral-mouse-902c.224096.workers.dev/</loc>
+    <loc>https://floral-mouse-902c.224096.workers.dev/</loc>
 </url>
 
 <url>
-<loc>https://floral-mouse-902c.224096.workers.dev/about.html</loc>
+    <loc>https://floral-mouse-902c.224096.workers.dev/about.html</loc>
+</url>
+
+<url>
+    <loc>https://floral-mouse-902c.224096.workers.dev/legal/privacy.html</loc>
+</url>
+
+<url>
+    <loc>https://floral-mouse-902c.224096.workers.dev/legal/terms.html</loc>
+</url>
+
+<url>
+    <loc>https://floral-mouse-902c.224096.workers.dev/legal/contact.html</loc>
 </url>
 
 </urlset>

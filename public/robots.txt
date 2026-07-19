@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://floral-mouse-902c.224096.workers.dev/sitemap.xml

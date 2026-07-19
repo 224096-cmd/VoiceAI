@@ -14,7 +14,7 @@ const MODELS = {
   qwen25_15b_q3km:
     'https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q3_K_M.gguf',
   qwen_math15b_iq4nl:
-    'https://huggingface.co/legraphista/Qwen2.5-Math-1.5B-Instruct-IMat-GGUF/resolve/main/Qwen2.5-Math-1.5B-Instruct.IQ4_NL.gguf',
+    'https://huggingface.co/bartowski/Qwen2.5-Math-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Math-1.5B-Instruct-IQ4_NL.gguf',
 };
 
 const DEFAULT_MODEL = 'sarashina1b_q4';
@@ -72,6 +72,58 @@ async function removeFromIndex(env, key, id) {
   await env.VOICEAI_KV.put(key, JSON.stringify(next));
 }
 
+async function sendReminderNow(env, reminder) {
+  const subIds = await getIndex(env, 'sub-index');
+  const subs = [];
+  for (const id of subIds) {
+    const raw = await env.VOICEAI_KV.get(`sub:${id}`);
+    if (raw) subs.push({ id, sub: JSON.parse(raw) });
+  }
+
+  if (subs.length === 0) {
+    console.log('通知購読先が登録されていません');
+    return;
+  }
+
+  const vapidPrivateJWK = JSON.parse(env.VAPID_PRIVATE_KEY);
+  const remaining = reminder.remainingCount - 1;
+
+  for (const { id: subId, sub } of subs) {
+    try {
+      const { endpoint, headers, body } = await buildPushHTTPRequest({
+        privateJWK: vapidPrivateJWK,
+        subscription: sub,
+        message: {
+          payload: {
+            title: reminder.title,
+            body: `${reminder.body}（${reminder.totalCount - remaining}/${reminder.totalCount}回目）`,
+          },
+          adminContact: env.VAPID_SUBJECT,
+          options: { ttl: 3600, urgency: 'high' },
+        },
+      });
+
+      const res = await fetch(endpoint, { method: 'POST', headers, body });
+      if (res.status === 404 || res.status === 410) {
+        await env.VOICEAI_KV.delete(`sub:${subId}`);
+        await removeFromIndex(env, 'sub-index', subId);
+      }
+    } catch (e) {
+      console.error('push failed', e);
+    }
+  }
+
+  if (remaining <= 0) {
+    await env.VOICEAI_KV.delete(`reminder:${reminder.id}`);
+    await removeFromIndex(env, 'reminder-index', reminder.id);
+  } else {
+    await env.VOICEAI_KV.put(
+      `reminder:${reminder.id}`,
+      JSON.stringify({ ...reminder, remainingCount: remaining })
+    );
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -117,6 +169,7 @@ export default {
       };
       await env.VOICEAI_KV.put(`reminder:${id}`, JSON.stringify(reminder));
       await addToIndex(env, 'reminder-index', id);
+
       return json(reminder);
     }
 
@@ -126,6 +179,7 @@ export default {
       await removeFromIndex(env, 'reminder-index', id);
       return json({ ok: true });
     }
+
     if (url.pathname === '/api/search' && request.method === 'POST') {
       const monthKey = `search-usage-${new Date().toISOString().slice(0, 7)}`;
       const raw = await env.VOICEAI_KV.get(monthKey);
@@ -161,70 +215,24 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    return env.ASSETS.fetch(request);
-  },
-
-  async scheduled(event, env, ctx) {
     const now = Date.now();
+
+    console.log("scheduled:", new Date(now).toISOString());
 
     const reminderIds = await getIndex(env, 'reminder-index');
     if (reminderIds.length === 0) return;
 
-    const dueReminders = [];
     for (const id of reminderIds) {
       const raw = await env.VOICEAI_KV.get(`reminder:${id}`);
       if (!raw) continue;
+      
       const r = JSON.parse(raw);
-      if (r.remainingCount > 0 && r.time <= now) dueReminders.push(r);
-    }
-
-    if (dueReminders.length === 0) return;
-
-    const subIds = await getIndex(env, 'sub-index');
-    const subs = [];
-    for (const id of subIds) {
-      const raw = await env.VOICEAI_KV.get(`sub:${id}`);
-      if (raw) subs.push({ id, sub: JSON.parse(raw) });
-    }
-
-    const vapidPrivateJWK = JSON.parse(env.VAPID_PRIVATE_KEY);
-
-    for (const reminder of dueReminders) {
-      const remaining = reminder.remainingCount - 1;
-
-      if (remaining <= 0) {
-        await env.VOICEAI_KV.delete(`reminder:${reminder.id}`);
-        await removeFromIndex(env, 'reminder-index', reminder.id);
-      } else {
-        await env.VOICEAI_KV.put(
-          `reminder:${reminder.id}`,
-          JSON.stringify({ ...reminder, remainingCount: remaining })
-        );
-      }
-
-      for (const { id: subId, sub } of subs) {
-        try {
-          const { endpoint, headers, body } = await buildPushHTTPRequest({
-            privateJWK: vapidPrivateJWK,
-            subscription: sub,
-            message: {
-              payload: {
-                title: reminder.title,
-                body: `${reminder.body}（${reminder.totalCount - remaining}/${reminder.totalCount}回目）`,
-              },
-              adminContact: env.VAPID_SUBJECT,
-              options: { ttl: 3600, urgency: 'high' },
-            },
-          });
-
-          const res = await fetch(endpoint, { method: 'POST', headers, body });
-          if (res.status === 404 || res.status === 410) {
-            await env.VOICEAI_KV.delete(`sub:${subId}`);
-            await removeFromIndex(env, 'sub-index', subId);
-          }
-        } catch (e) {
-          console.error('push failed', e);
-        }
+      console.log({
+        now: new Date(now).toISOString(),
+        reminder: new Date(r.time).toISOString(),
+      });
+      if (r.remainingCount > 0 && r.time <= now) {
+        await sendReminderNow(env, r);
       }
     }
   },

@@ -1,8 +1,10 @@
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js');
+  navigator.serviceWorker.register('/sw.js').catch((e) => {
+    console.error('Service Worker登録に失敗しました', e);
+  });
 }
 
-import './style.css';
+import '../style.css';
 import { Wllama } from '@wllama/wllama';
 import nerdamer from 'nerdamer';
 import 'nerdamer/Algebra';
@@ -244,11 +246,13 @@ function addBubble(role, text) {
   meta.appendChild(time);
 
   if (role === 'ai') {
-    const speakBtn = document.createElement('button');
-    speakBtn.className = 'msgActionBtn';
-    speakBtn.textContent = '🔊';
-    speakBtn.addEventListener('click', () => toggleSpeak(text, speakBtn));
-    meta.appendChild(speakBtn);
+    if (settings.autoSpeak) {
+      const speakBtn = document.createElement('button');
+      speakBtn.className = 'msgActionBtn';
+      speakBtn.textContent = '🔊';
+      speakBtn.addEventListener('click', () => toggleSpeak(text, speakBtn));
+      meta.appendChild(speakBtn);
+    }
 
     const favBtn = document.createElement('button');
     favBtn.className = 'msgActionBtn';
@@ -298,13 +302,27 @@ function setupModelSelect() {
   const saved = localStorage.getItem(STORAGE_KEY) || MODELS[0].id;
   modelSelect.value = saved;
 
-  modelSelect.addEventListener('change', () => {
+  modelSelect.addEventListener('change', async () => {
     if (modelLoaded) {
-      const ok = confirm('モデルを切り替えます。ページを再読み込みします。よろしいですか？');
+      const ok = confirm('モデルを切り替えます。今のモデルのデータを削除して再読み込みします。よろしいですか？');
       if (!ok) {
         modelSelect.value = localStorage.getItem(STORAGE_KEY) || MODELS[0].id;
         return;
       }
+
+      try {
+        const root = await navigator.storage.getDirectory();
+        const names = [];
+        for await (const name of root.keys()) {
+          names.push(name);
+        }
+        for (const name of names) {
+          await root.removeEntry(name, { recursive: true });
+        }
+      } catch (e) {
+        console.error('旧モデルデータの削除に失敗しました', e);
+      }
+
       localStorage.setItem(STORAGE_KEY, modelSelect.value);
       location.reload();
       return;
@@ -383,6 +401,11 @@ async function sendMessage() {
   primeSpeechIfNeeded();
 
   const userRefs = addBubble('user', userText);
+  setTimeout(() => {
+    const readLabel = document.createElement('span');
+    readLabel.textContent = '既読';
+    userRefs.meta.appendChild(readLabel);
+  }, 5000);
   pushHistory('user', userText);
 
   inputEl.value = '';
@@ -391,9 +414,6 @@ async function sendMessage() {
 
   setGeneratingStatus(true);
 
-  let tokenCount = 0;
-  const halfway = Math.floor(settings.nPredict / 2);
-  let readMarked = false;
 
   try {
     let searchContext = '';
@@ -431,17 +451,7 @@ async function sendMessage() {
       ...conversationHistory,
     ];
 
-    const outputText = await askAI(messages, {
-      onNewToken: () => {
-        tokenCount++;
-        if (!readMarked && tokenCount >= halfway) {
-          readMarked = true;
-          const readLabel = document.createElement('span');
-          readLabel.textContent = '既読';
-          userRefs.meta.appendChild(readLabel);
-        }
-      },
-    });
+    const outputText = await askAI(messages);
 
     const cleaned = stripThinkTags(outputText);
     addBubble('ai', cleaned);
@@ -621,7 +631,18 @@ function tryMathJs(command) {
     case 'det': return math.format(math.det(matrix), { precision: 6 });
     case 'inv': return math.format(math.inv(matrix), { precision: 6 });
     case 'transpose': return math.format(math.transpose(matrix), { precision: 6 });
-    case 'rank': return String(math.rank(matrix));
+    case 'rank': {
+      try {
+        // LUP分解を使って、上三角行列の対角成分からランク（階数）を判定します
+        const lup = math.lup(matrix);
+        const diag = math.diag(lup.U);
+        const r = diag.valueOf().filter(val => Math.abs(val) > 1e-9).length;
+        return String(r);
+      } catch (e) {
+        // 万が一計算できない行列（正方行列以外など）の場合は0やエラーを返す
+        return '0';
+      }
+    }
     case 'trace': return math.format(math.trace(matrix), { precision: 6 });
     case 'eigenvals': return math.format(math.eigs(matrix).values, { precision: 6 });
     default: return null;
@@ -759,6 +780,16 @@ let dragging = false;
 let dragStart = null;
 
 let mediaStream = null;
+let zoomLevel = 1;
+
+function applyDigitalZoom() {
+  scanVideo.style.transform = `scale(${zoomLevel})`;
+}
+
+document.getElementById('zoomSlider').addEventListener('input', (e) => {
+  zoomLevel = parseFloat(e.target.value);
+  applyDigitalZoom();
+});
 
 async function startCamera() {
   if (mediaStream) return;
@@ -767,7 +798,9 @@ async function startCamera() {
       video: { facingMode: { ideal: 'environment' } },
       audio: false,
     });
+    
     scanVideo.srcObject = mediaStream;
+    document.getElementById('zoomRow').style.display = 'flex';
   } catch (e) {
     console.error(e);
     scanStatus.textContent = 'カメラを起動できませんでした（権限を確認してください）';
@@ -854,9 +887,16 @@ scanCaptureBtn.addEventListener('click', () => {
     return;
   }
 
-  scanCanvas.width = scanVideo.videoWidth;
-  scanCanvas.height = scanVideo.videoHeight;
-  scanCanvas.getContext('2d').drawImage(scanVideo, 0, 0);
+  const vw = scanVideo.videoWidth;
+  const vh = scanVideo.videoHeight;
+  const cropW = vw / zoomLevel;
+  const cropH = vh / zoomLevel;
+  const cropX = (vw - cropW) / 2;
+  const cropY = (vh - cropH) / 2;
+
+  scanCanvas.width = cropW;
+  scanCanvas.height = cropH;
+  scanCanvas.getContext('2d').drawImage(scanVideo, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
   const dataUrl = scanCanvas.toDataURL('image/png');
   scanPreview.src = dataUrl;
@@ -886,6 +926,9 @@ scanRetakeBtn.addEventListener('click', () => {
   scanRetakeBtn.style.display = 'none';
   scanSaveAlbumBtn.style.display = 'none';
   scanSaveHint.style.display = 'none';
+  zoomLevel = 1;
+  document.getElementById('zoomSlider').value = 1;
+  applyDigitalZoom();
   ocrBtn.disabled = true;
   qrBtn.disabled = true;
   scanResult.textContent = '';
@@ -1208,33 +1251,53 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
+const VAPID_PUBLIC_KEY = "BPL2Tzy_2Uzkxqq-FnZ5magpsBH-DJLRVYu0M9oLqen8EScOubmitEziOVrgaWBha_0JuPDCcvaDLKvlPZBV4KE";
+
 async function enablePush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('この端末/ブラウザはプッシュ通知に対応していません');
     return;
   }
 
-  const perm = await Notification.requestPermission();
-  if (perm !== 'granted') {
-    alert('通知が許可されませんでした');
-    return;
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      alert('通知が許可されませんでした（設定アプリで許可してください）');
+      return;
+    }
+
+    const reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Service Workerの準備がタイムアウトしました')), 10000)
+      ),
+    ]);
+
+    let existingSub = await reg.pushManager.getSubscription();
+    if (existingSub) {
+      await existingSub.unsubscribe();
+    }
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+
+    const subscribeRes = await fetch('/api/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub.toJSON()),
+    });
+
+    if (!subscribeRes.ok) {
+      throw new Error(`サーバーへの登録に失敗 (status: ${subscribeRes.status})`);
+    }
+
+    alert('通知を有効化しました');
+  } catch (error) {
+    console.error('通知の有効化に失敗しました', error);
+    alert(`通知の有効化に失敗しました: ${error.message}`);
   }
-
-  const reg = await navigator.serviceWorker.ready;
-  const { publicKey } = await fetch('/api/vapid-public-key').then((r) => r.json());
-
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
-  });
-
-  await fetch('/api/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sub.toJSON()),
-  });
-
-  alert('通知を有効化しました');
 }
 
 /* ==================== 予定(リマインダー) ==================== */
@@ -1406,6 +1469,38 @@ function updateHeaderState() {
   }
 }
 
+function updateSettingsAdState() {
+  const slot2 = document.getElementById('adSlot2');
+  const offline2 = document.getElementById('offlineLabel2');
+  if (!slot2 || !offline2) return;
+
+  if (!navigator.onLine) {
+    slot2.style.display = 'none';
+    offline2.style.display = 'block';
+    return;
+  }
+
+  offline2.style.display = 'none';
+  slot2.style.display = 'block';
+
+  if (isLocalHost()) return;
+  if (slot2.dataset.loaded) return;
+  slot2.dataset.loaded = 'true';
+
+  const container = document.createElement('div');
+  container.id = 'container-5c341483bd75fe891511676bb07d07e5';
+  slot2.appendChild(container);
+
+  const script = document.createElement('script');
+  script.async = true;
+  script.setAttribute('data-cfasync', 'false');
+  script.src = 'https://pl30409060.effectivecpmnetwork.com/5c341483bd75fe891511676bb07d07e5/invoke.js';
+  slot2.appendChild(script);
+}
+
+document.querySelector('.tabBtn[data-page="settingsPage"]').addEventListener('click', updateSettingsAdState);
+window.addEventListener('online', updateSettingsAdState);
+window.addEventListener('offline', updateSettingsAdState);
 window.addEventListener('online', updateHeaderState);
 window.addEventListener('offline', updateHeaderState);
 updateHeaderState();
@@ -1423,6 +1518,25 @@ function updateSearchModeButton() {
 document.getElementById('searchModeToggle').addEventListener('click', () => {
   searchModeOn = !searchModeOn;
   updateSearchModeButton();
+});
+
+/* ==================== 法的ページ ==================== */
+
+document.querySelectorAll('.legalLinkBtn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const key = btn.dataset.legal;
+    const res = await fetch(`/legal/${key}.html`);
+    const html = await res.text();
+    document.getElementById('legalContent').innerHTML = html;
+
+    document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+    document.getElementById('legalPage').classList.add('active');
+  });
+});
+
+document.getElementById('legalBackBtn').addEventListener('click', () => {
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  document.getElementById('settingsPage').classList.add('active');
 });
 
 setupModelSelect();
