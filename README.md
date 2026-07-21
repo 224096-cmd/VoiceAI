@@ -1,11 +1,10 @@
-# VoiceAI
+# Offria — Private Local AI Assistant
 
-ローカルAIを利用したPWAチャットアプリです。
+Offria（オフリア）はローカルAIを利用したプライベートPWAチャットアプリです。
 
 ## Demo
 
 実際に利用できます。
-
 https://floral-mouse-902c.224096.workers.dev/
 
 ## Features
