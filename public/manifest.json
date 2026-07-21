@@ -1,6 +1,7 @@
 {
-  "name": "VoiceAI",
-  "short_name": "VoiceAI",
+  "name": "Offria — Private Local AI Assistant",
+  "short_name": "Offria",
+  "description": "Offria（オフリア）は完全ローカルで動作するAIチャットPWAです。",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

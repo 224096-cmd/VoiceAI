@@ -153,7 +153,7 @@ html, body {
 #scanButtons button { flex: 1; padding: 10px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; }
 #scanButtons button:disabled { background: var(--border); }
 #scanStatus { font-size: 12px; color: var(--sub); margin-bottom: 8px; flex-shrink: 0; }
-#scanResult { padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; min-height: 30px; max-height: 25vh; overflow-y: auto; }
+#scanResult { padding: 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 16px; line-height: 1.9; white-space: pre-wrap; margin-bottom: 8px; min-height: 30px; max-height: 40vh; overflow-y: auto; -webkit-user-select: text; user-select: text; }
 #scanResultActions { display: flex; gap: 8px; flex-shrink: 0; }
 #scanResultActions button { flex: 1; padding: 10px; border: none; border-radius: 8px; background: var(--accent); color: #fff; }
 
@@ -181,6 +181,7 @@ html, body {
 #noteCancelBtn { background: var(--bg); color: var(--sub); border: 1px solid var(--border); }
 
 .fieldLabel { font-size: 12px; color: var(--sub); margin: 8px 0 4px; display: block; }
+.settingDesc { font-size: 11px; color: var(--sub); margin: 0 0 6px; line-height: 1.5; }
 #settingTemp, #settingTokens, #settingSystemPrompt { width: 100%; }
 #settingSystemPrompt { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); font-size: 13px; resize: vertical; flex-shrink: 0; min-height: 120px; }
 #settingSave, #settingReset { width: 100%; padding: 10px; margin-top: 10px; border: none; border-radius: 8px; font-size: 14px; }
@@ -215,3 +216,36 @@ html, body {
 
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+#calcExamplesBtn {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+#cmdTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+#cmdTable th,
+#cmdTable td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 4px;
+  text-align: left;
+}
+
+#cmdTable code {
+  font-family: monospace;
+  background: var(--bubble-ai);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+#preciseModeToggle { }

@@ -13,9 +13,11 @@
     "wrangler": "^4.110.0"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@pushforge/builder": "^2.0.5",
     "@wllama/wllama": "^2.3.7",
     "@zxing/browser": "^0.2.1",
+    "kokoro-js": "^1.2.1",
     "mathjs": "^15.2.0",
     "nerdamer": "^1.1.13",
     "tesseract.js": "^7.0.0"

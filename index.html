@@ -4,8 +4,9 @@
   <meta name="google-site-verification" content="AekooUOkADSlNMKI7TVY4Uo_dT3hG0PqcBKcUQCV0_Q" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-  <title>VoiceAI - ローカルAI PWA</title>
-  <meta name="description" content="VoiceAIはスマートフォンで動作するローカルAIチャットPWAです。OCR、QRコード読み取り、計算機能を搭載しています。" />
+  <title>Offria — Private Local AI Assistant</title>
+  <meta name="description" content="Offria（オフリア）は、スマートフォンで動作する完全ローカルAIチャットPWAです。インターネット接続なしでAIと会話でき、OCR・QRコード読み取り・計算機能なども搭載しています。" />
+  <meta name="keywords" content="Offria, オフリア, ローカルAI, PWA, オフラインAI, AIチャット" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
@@ -17,7 +18,7 @@
 <body>
   <div id="app">
     <header id="header">
-      <h1 id="headerTitle">VoiceAI</h1>
+      <h1 id="headerTitle">Offria</h1>
       <div id="headerSub">
         <div id="adSlot"></div>
         <span id="offlineLabel" style="display:none;">（オフライン）</span>
@@ -37,7 +38,8 @@
       <button id="searchModeToggle">🔎 検索OFF</button>
       <div id="toolbar">
         <button id="clearChat">会話をクリア</button>
-        <button id="clearCache">キャッシュを完全削除</button>
+        <button id="deleteModel">AIモデル削除</button>
+        <button id="clearCache">キャッシュ削除</button>
       </div>
     </main>
 
@@ -62,6 +64,7 @@
       <ul id="calcLog"></ul>
       <button id="calcCommandsToggle">コマンド一覧を表示</button>
       <div id="calcCommandsPanel"></div>
+      <button id="calcExamplesBtn">入力例を見る</button>
     </main>
 
     <main id="scanPage" class="page">
@@ -131,17 +134,43 @@
     <main id="settingsPage" class="page">
       <h2 class="pageTitle">AI設定</h2>
       <label class="fieldLabel" for="settingTemp">温度(temperature): <span id="settingTempVal"></span></label>
+      <p class="settingDesc">値が高いほど表現が多様でランダムになり、低いほど無難で一貫した回答になります。</p>
       <input type="range" id="settingTemp" min="0" max="1.5" step="0.1" />
+
       <label class="fieldLabel" for="settingTokens">最大トークン数(nPredict)</label>
+      <p class="settingDesc">AIが1回の返答で生成する単語数の上限です。大きくすると長い回答が可能になりますが、生成時間も伸びます。</p>
       <input type="number" id="settingTokens" min="16" max="512" step="16" />
+
+      <label class="fieldLabel" for="settingTopK">Top-K(候補として残す単語数)</label>
+      <p class="settingDesc">次の単語を選ぶ際に検討する候補の数です。小さくすると手堅く、大きくすると表現の幅が広がります。</p>
+      <input type="number" id="settingTopK" min="1" max="200" step="1" />
+
+      <label class="fieldLabel" for="settingTopP">Top-P: <span id="settingTopPVal"></span></label>
+      <p class="settingDesc">確率の高い候補から、合計がこの割合になるまでに絞り込みます。1に近いほど選択肢が広がります。</p>
+      <input type="range" id="settingTopP" min="0" max="1" step="0.05" />
+
       <label class="fieldLabel" for="settingSystemPrompt">システムプロンプト({N}が最大トークン数に置き換わります)</label>
+      <p class="settingDesc">AIに常に与える指示文です。口調や回答の方針など、会話全体に共通するルールを設定できます。</p>
       <textarea id="settingSystemPrompt" rows="4"></textarea>
+      <label class="fieldLabel" for="settingTtsMode">読み上げ</label>
+      <p class="settingDesc">高性能モードは声質が自然になりますが、初回のみ音声モデル(数十MB)のダウンロードが必要です。</p>
+      <select id="settingTtsMode">
+        <option value="off">オフ</option>
+        <option value="default">標準(端末の音声合成)</option>
+        <option value="high">高性能(自然な声質・要ダウンロード)</option>
+      </select>
+
+      <label class="fieldLabel" for="settingHistoryLength">会話の記憶件数</label>
+      <p class="settingDesc">さかのぼって考慮する過去のやり取りの件数です。増やすほど文脈は正確になりますが、生成が遅くなることがあります。</p>
+      <input type="number" id="settingHistoryLength" min="0" max="30" step="2" />
+
       <label class="switchRow">
-        <input type="checkbox" id="settingAutoSpeak" />
-        AIの回答を自動で読み上げる
+        <input type="checkbox" id="settingStreaming" />
+        回答をリアルタイム表示する(生成中の文章を随時表示)
       </label>
       <button id="settingSave">設定を保存</button>
       <button id="settingReset">初期値に戻す</button>
+      <button id="resetEverythingBtn" style="margin-top:24px; background:#ff3b30; color:#fff;">すべてのデータを削除</button>
 
       <div id="settingsAdWrap" style="margin-top:40px;">
         <div id="adSlot2"></div>
@@ -169,6 +198,10 @@
         <input type="text" id="reminderTitle" placeholder="お知らせの内容" />
         <label class="fieldLabel" for="reminderCount">通知回数</label>
         <select id="reminderCount"></select>
+        <label class="switchRow">
+          <input type="checkbox" id="preciseModeToggle" />
+          高精度モード(Durable Objects使用・より正確な時刻に届きます)
+        </label>
         <button id="addReminder">予定を追加</button>
       </div>
       <h3 id="reminderListTitle">設定済みの予定</h3>

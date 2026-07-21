@@ -14,13 +14,16 @@ import 'nerdamer/Extra';
 import * as math from 'mathjs';
 
 const MODELS = [
-  { id: 'sarashina1b_q4', label: 'sarashina2.2-1B 高精度版（931MB・日本語）' },
-  { id: 'tinyswallow15b', label: 'TinySwallow-1.5B（1.13GB・日本語高性能）' },
-  { id: 'qwen_coder05b', label: 'Qwen2.5-Coder-0.5B（491MB・コード特化）' },
-  { id: 'sarashina1b_iq2xxs', label: 'sarashina2.2-1B 軽量版（542MB・日本語）' },
-  { id: 'lfm25_jp', label: 'LFM2.5-1.2B-JP（731MB・日本語）' },
-  { id: 'qwen25_15b_q3km', label: 'Qwen2.5-1.5B-Instruct（936MB・汎用高品質）' },
-  { id: 'qwen_math15b_iq4nl', label: 'Qwen2.5-Math-1.5B（936MB・数学/論理特化）' },
+  { id: 'sarashina1b_q4', label: 'sarashina2.2-1B（931MB・日本語特化・高品質会話向け・SB Intuitionsソフトバンクグループ）' },
+  { id: 'tinyswallow15b', label: 'TinySwallow-1.5B（1.13GB・日本語特化・高品質会話向け・Sakana AI）' },
+  { id: 'qwen_coder05b', label: 'Qwen2.5-Coder-0.5B（491MB・軽量・コード生成特化・Alibaba）' },
+  { id: 'sarashina1b_iq2xxs', label: 'sarashina2.2-1B IQ2_XXS（542MB・軽量・日本語会話向け・SB Intuitionsソフトバンクグループ）' },
+  { id: 'lfm25_jp', label: 'LFM2.5-1.2B-JP（731MB・日本語特化・高速会話向け・Liquid AI）' },
+  { id: 'qwen25_15b_q3km', label: 'Qwen2.5-1.5B-Instruct（936MB・汎用・文章生成向け・Alibaba）' },
+  { id: 'gemma3_1b_iq1m', label: 'Gemma3-1B-IT UD-IQ1_M（560MB・軽量・基本会話向け・Google）' },
+  { id: 'gemma3_1b_q4km', label: 'Gemma3-1B-IT Q4_K_M（806MB・汎用・高品質会話向け・Google）' },
+  { id: 'gemma3_1b_bf16', label: 'Gemma3-1B-IT BF16（2.01GB・高品質・高性能端末のみ対応・Google）' },
+  { id: 'qwen_math15b_q4km', label: 'Qwen2.5-Math-1.5B（986MB・数学・論理推論特化・Alibaba）' },
 ];
 
 const STORAGE_KEY = 'voiceai-model';
@@ -29,12 +32,26 @@ const SETTINGS_KEY = 'voiceai-settings';
 const DEFAULT_SETTINGS = {
   temp: 0.7,
   nPredict: 128,
+  topK: 40,
+  topP: 0.9,
   systemPrompt: 'あなたは親切なアシスタントです。日本語で、必ず{N}トークン程度以内に収まるよう、要点を絞って簡潔に、文の途中で終わらないように答えてください。',
-  autoSpeak: false,
+  ttsMode: 'off',
+  streamingDisplay: false,
+  historyLength: 8,
 };
 
 const N_CTX = 1024;
-const MAX_HISTORY = 8;
+
+const USER_ID_KEY = 'voiceai-user-id';
+
+function getUserId() {
+  let id = localStorage.getItem(USER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(USER_ID_KEY, id);
+  }
+  return id;
+}
 
 let settings = loadSettings();
 
@@ -67,6 +84,7 @@ const sendBtn = document.getElementById('send');
 const inputEl = document.getElementById('input');
 const clearCacheBtn = document.getElementById('clearCache');
 const clearChatBtn = document.getElementById('clearChat');
+const deleteModelBtn = document.getElementById('deleteModel');
 const modelSelect = document.getElementById('modelSelect');
 const downloadBtn = document.getElementById('downloadBtn');
 const charCountEl = document.getElementById('charCount');
@@ -75,6 +93,9 @@ let modelLoaded = false;
 let conversationHistory = [];
 let remindersCache = [];
 const recentlyDeletedIds = new Set();
+
+let isGenerating = false;
+let messageQueue = [];
 
 /* ==================== IndexedDB ==================== */
 
@@ -198,6 +219,56 @@ function stripThinkTags(text) {
 let isSpeaking = false;
 let currentSpeakBtn = null;
 
+let kokoroTTS = null;
+let kokoroLoadingPromise = null;
+
+async function ensureKokoroLoaded() {
+  if (kokoroTTS) return kokoroTTS;
+  if (kokoroLoadingPromise) return kokoroLoadingPromise;
+
+  kokoroLoadingPromise = (async () => {
+    const prevStatus = statusEl.textContent;
+    statusEl.textContent = '音声モデルをダウンロード中...(初回のみ)';
+
+    const { KokoroTTS } = await import('kokoro-js');
+    const { env } = await import('@huggingface/transformers');
+
+    env.remoteHost = new URL('/hf-proxy/', window.location.href).href;
+
+    const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+      dtype: 'q8',
+      device: 'wasm',
+    });
+    kokoroTTS = tts;
+    statusEl.textContent = prevStatus;
+    return tts;
+  })();
+
+  return kokoroLoadingPromise;
+}
+
+async function speakHighQuality(text) {
+  try {
+    const tts = await ensureKokoroLoaded();
+    const audio = await tts.generate(text, { voice: 'jf_alpha' });
+    const blob = await audio.toBlob();
+    const url = URL.createObjectURL(blob);
+    const player = new Audio(url);
+    player.play();
+  } catch (e) {
+    console.error('高性能読み上げに失敗しました。標準の読み上げに切り替えます', e);
+    speakOnce(text);
+  }
+}
+
+function speakBySettings(text) {
+  if (settings.ttsMode === 'high') {
+    speakHighQuality(text);
+  } else if (settings.ttsMode === 'default') {
+    speakOnce(text);
+  }
+}
+
 function toggleSpeak(text, btn) {
   if (!('speechSynthesis' in window)) return;
 
@@ -227,6 +298,14 @@ function toggleSpeak(text, btn) {
   btn.textContent = '⏸';
 }
 
+function speakOnce(text) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ja-JP';
+  speechSynthesis.speak(utter);
+}
+
 function addBubble(role, text) {
   const wrap = document.createElement('div');
   wrap.className = role === 'user' ? 'msgWrap msgWrap-user' : 'msgWrap msgWrap-ai';
@@ -246,11 +325,17 @@ function addBubble(role, text) {
   meta.appendChild(time);
 
   if (role === 'ai') {
-    if (settings.autoSpeak) {
+    if (settings.ttsMode !== 'off') {
       const speakBtn = document.createElement('button');
       speakBtn.className = 'msgActionBtn';
       speakBtn.textContent = '🔊';
-      speakBtn.addEventListener('click', () => toggleSpeak(text, speakBtn));
+      speakBtn.addEventListener('click', () => {
+        if (settings.ttsMode === 'high') {
+          speakHighQuality(text);
+        } else {
+          toggleSpeak(text, speakBtn);
+        }
+      });
       meta.appendChild(speakBtn);
     }
 
@@ -278,8 +363,9 @@ function addBubble(role, text) {
 
 function pushHistory(role, content) {
   conversationHistory.push({ role, content });
-  if (conversationHistory.length > MAX_HISTORY) {
-    conversationHistory = conversationHistory.slice(-MAX_HISTORY);
+  const limit = settings.historyLength;
+  if (limit > 0 && conversationHistory.length > limit) {
+    conversationHistory = conversationHistory.slice(-limit);
   }
 }
 
@@ -368,11 +454,12 @@ async function loadModel() {
   }
 }
 
-/* ==================== チャット送信 ==================== */
+/* ==================== チャット送信(送信ボタンは生成中も使え、順番に処理) ==================== */
 
-function setGeneratingStatus(isGenerating) {
+function setGeneratingStatus() {
   if (isGenerating) {
-    statusEl.innerHTML = '<span class="spinner"></span>生成中...';
+    const waiting = messageQueue.length;
+    statusEl.innerHTML = `<span class="spinner"></span>生成中...${waiting > 0 ? `(待機 ${waiting}件)` : ''}`;
   } else {
     statusEl.textContent = '準備完了';
   }
@@ -381,39 +468,50 @@ function setGeneratingStatus(isGenerating) {
 async function askAI(messages, options = {}) {
   return wllama.createChatCompletion(messages, {
     nPredict: settings.nPredict,
-    sampling: { temp: settings.temp, top_k: 40, top_p: 0.9 },
+    sampling: { temp: settings.temp, top_k: settings.topK, top_p: settings.topP },
     ...options,
   });
 }
 
 function primeSpeechIfNeeded() {
-  if (settings.autoSpeak && 'speechSynthesis' in window) {
+  if (settings.ttsMode === 'default' && 'speechSynthesis' in window) {
     const primer = new SpeechSynthesisUtterance(' ');
     primer.volume = 0;
     speechSynthesis.speak(primer);
   }
 }
 
-async function sendMessage() {
+function sendMessage() {
   const userText = inputEl.value.trim();
   if (!userText) return;
 
   primeSpeechIfNeeded();
 
   const userRefs = addBubble('user', userText);
+
+  inputEl.value = '';
+  charCountEl.textContent = '0文字';
+
   setTimeout(() => {
     const readLabel = document.createElement('span');
     readLabel.textContent = '既読';
     userRefs.meta.appendChild(readLabel);
   }, 5000);
+
+  messageQueue.push(userText);
+  setGeneratingStatus();
+  processQueue();
+}
+
+async function processQueue() {
+  if (isGenerating) return;
+  const userText = messageQueue.shift();
+  if (userText === undefined) return;
+
+  isGenerating = true;
+  setGeneratingStatus();
+
   pushHistory('user', userText);
-
-  inputEl.value = '';
-  charCountEl.textContent = '0文字';
-  sendBtn.disabled = true;
-
-  setGeneratingStatus(true);
-
 
   try {
     let searchContext = '';
@@ -451,25 +549,35 @@ async function sendMessage() {
       ...conversationHistory,
     ];
 
-    const outputText = await askAI(messages);
+    let outputText;
 
-    const cleaned = stripThinkTags(outputText);
-    addBubble('ai', cleaned);
-    pushHistory('assistant', cleaned);
-
-    if (settings.autoSpeak) {
-      const aiSpeakBtn = logEl.querySelector('.msgWrap-ai .msgActionBtn');
-      toggleSpeak(cleaned, aiSpeakBtn);
+    if (settings.streamingDisplay) {
+      const aiRefs = addBubble('ai', '');
+      outputText = await askAI(messages, {
+        onNewToken: (token, piece, currentText) => {
+          aiRefs.bubble.textContent = stripThinkTags(currentText) || '…';
+        },
+      });
+      const cleaned = stripThinkTags(outputText);
+      aiRefs.bubble.textContent = cleaned;
+      pushHistory('assistant', cleaned);
+      speakBySettings(cleaned);
+    } else {
+      outputText = await askAI(messages);
+      const cleaned = stripThinkTags(outputText);
+      addBubble('ai', cleaned);
+      pushHistory('assistant', cleaned);
+      speakBySettings(cleaned);
     }
 
-    setGeneratingStatus(false);
   } catch (error) {
     console.error(error);
     logEl.textContent += `\n生成エラー:\n${error.message}\n`;
-    statusEl.textContent = 'エラー';
   }
 
-  sendBtn.disabled = false;
+  isGenerating = false;
+  setGeneratingStatus();
+  processQueue();
 }
 
 /* ==================== クリア系ボタン ==================== */
@@ -481,12 +589,9 @@ clearChatBtn.addEventListener('click', () => {
   conversationHistory = [];
 });
 
-clearCacheBtn.addEventListener('click', async () => {
-  const ok = confirm('キャッシュとダウンロード済みのモデルデータを完全に削除します。よろしいですか？(再度ダウンロードが必要になります)');
+deleteModelBtn.addEventListener('click', async () => {
+  const ok = confirm('ダウンロード済みのAIモデルデータを削除します。よろしいですか？(再度ダウンロードが必要になります)');
   if (!ok) return;
-
-  const keys = await caches.keys();
-  await Promise.all(keys.map((key) => caches.delete(key)));
 
   try {
     const root = await navigator.storage.getDirectory();
@@ -498,10 +603,28 @@ clearCacheBtn.addEventListener('click', async () => {
       await root.removeEntry(name, { recursive: true });
     }
   } catch (e) {
-    console.error('OPFSの削除に失敗しました', e);
+    console.error('AIモデルの削除に失敗しました', e);
   }
 
-  alert('キャッシュとモデルデータを削除しました。ページを再読み込みします。');
+  localStorage.removeItem(STORAGE_KEY);
+  modelLoaded = false;
+  downloadBtn.disabled = false;
+  modelSelect.disabled = false;
+  sendBtn.disabled = true;
+  inputEl.disabled = true;
+  statusEl.textContent = 'モデルを選んで「ダウンロード開始」を押してください';
+
+  alert('AIモデルのデータを削除しました。');
+});
+
+clearCacheBtn.addEventListener('click', async () => {
+  const ok = confirm('アプリのキャッシュ(HTML/CSS/JSなど)を削除します。よろしいですか？');
+  if (!ok) return;
+
+  const keys = await caches.keys();
+  await Promise.all(keys.map((key) => caches.delete(key)));
+
+  alert('キャッシュを削除しました。ページを再読み込みします。');
   location.reload();
 });
 
@@ -552,6 +675,41 @@ const CALC_COMMANDS = [
   ['min()', '最小値'], ['max()', '最大値'], ['pi', '円周率'],
   ['e', 'ネイピア数'], ['I', '虚数'],
 ];
+
+const CALC_EXAMPLES = {
+  '+': '3+5', '-': '10-4', '*': '6*7', '/': '20/4', '%': '17%5', '^': '2^10',
+  '()': '(2+3)*4', 'sqrt()': 'sqrt(16)', 'abs()': 'abs(-7)',
+  'sin()': 'sin(45)', 'cos()': 'cos(pi/2)', 'tan()': 'tan(45)',
+  'asin()': 'asin(0.5)', 'acos()': 'acos(0.5)', 'atan()': 'atan(1)',
+  'log()': 'log(e)', 'log10()': 'log10(1000)', 'log(x,b)': 'log(8,2)',
+  'ln()': 'ln(e)', 'exp()': 'exp(1)',
+  'diff()': 'diff(x^2,x)', 'integrate()': 'integrate(x^2,x)', 'limit()': 'limit(sin(x)/x,x=0)',
+  'expand()': 'expand((x+1)^2)', 'factor()': 'factor(x^2-1)', 'simplify()': 'simplify((x^2-1)/(x-1))',
+  'solve()': 'solve(x^2-5*x+6=0,x)', 'subs()': 'subs(x^2+1,x,3)', 'N()': 'N(sqrt(2))',
+  'det()': 'det([[1,2],[3,4]])', 'inv()': 'inv([[1,2],[3,4]])', 'transpose()': 'transpose([[1,2],[3,4]])',
+  'eigenvals()': 'eigenvals([[2,0],[0,3]])', 'rank()': 'rank([[1,2],[2,4]])', 'trace()': 'trace([[1,2],[3,4]])',
+  'zeros()': 'zeros(2,2)', 'ones()': 'ones(2,2)', 'eye()': 'eye(3)',
+  'sum()': 'sum(1,2,3,4)', 'product()': 'product(2,3,4)', 'factorial()': 'factorial(5)',
+  'gcd()': 'gcd(12,18)', 'lcm()': 'lcm(4,6)', 'mod()': 'mod(17,5)',
+  'floor()': 'floor(3.7)', 'ceil()': 'ceil(3.2)', 'round()': 'round(3.5)',
+  'min()': 'min(4,9,2)', 'max()': 'max(4,9,2)', 'pi': 'pi', 'e': 'e', 'I': 'I^2',
+};
+
+function buildCalcExamplesHtml() {
+  const rows = CALC_COMMANDS.map(([cmd, desc]) => {
+    const example = CALC_EXAMPLES[cmd] || cmd;
+    return `<tr><td><code>${cmd}</code></td><td>${desc}</td><td><code>${example}</code></td></tr>`;
+  }).join('');
+
+  return `
+    <h2>計算コマンドの入力例</h2>
+    <p>計算タブの「直接コマンドを入力する」をONにした状態で、以下のように入力してください。</p>
+    <table id="cmdTable">
+      <tr><th>コマンド</th><th>説明</th><th>入力例</th></tr>
+      ${rows}
+    </table>
+  `;
+}
 
 function setupCalcCommandsPanel() {
   CALC_COMMANDS.forEach(([cmd, desc]) => {
@@ -633,13 +791,11 @@ function tryMathJs(command) {
     case 'transpose': return math.format(math.transpose(matrix), { precision: 6 });
     case 'rank': {
       try {
-        // LUP分解を使って、上三角行列の対角成分からランク（階数）を判定します
         const lup = math.lup(matrix);
         const diag = math.diag(lup.U);
-        const r = diag.valueOf().filter(val => Math.abs(val) > 1e-9).length;
+        const r = diag.valueOf().filter((val) => Math.abs(val) > 1e-9).length;
         return String(r);
       } catch (e) {
-        // 万が一計算できない行列（正方行列以外など）の場合は0やエラーを返す
         return '0';
       }
     }
@@ -653,7 +809,7 @@ function tryJsFallback(command) {
   const m = command.match(/^(\w+)\((.*)\)$/s);
   if (!m) return null;
   const [, fn, argsStr] = m;
-  const jsFns = ['floor', 'ceil', 'round', 'min', 'max', 'mod', 'gcd', 'lcm', 'factorial'];
+  const jsFns = ['floor', 'ceil', 'round', 'min', 'max', 'mod', 'gcd', 'lcm', 'factorial', 'sum', 'product'];
   if (!jsFns.includes(fn)) return null;
 
   const args = argsStr.split(',').map((s) => parseFloat(s.trim()));
@@ -674,11 +830,22 @@ function tryJsFallback(command) {
       for (let i = 2; i <= args[0]; i++) result *= i;
       return String(result);
     }
+    case 'sum': return String(args.reduce((a, b) => a + b, 0));
+    case 'product': return String(args.reduce((a, b) => a * b, 1));
     default: return null;
   }
 }
 
 const SYMBOLIC_COMMANDS = /^(diff|integrate|factor|expand|simplify|limit)\(/;
+
+function toCleanNumber(nerdamerResult) {
+  const numeric = Number(nerdamerResult.valueOf());
+  if (Number.isFinite(numeric)) {
+    const rounded = parseFloat(numeric.toPrecision(10));
+    return String(rounded);
+  }
+  return nerdamerResult.toString();
+}
 
 function runCalculation(command) {
   const jsResult = tryJsFallback(command);
@@ -695,7 +862,18 @@ function runCalculation(command) {
 
   const evalMatch = command.match(/^evaluate\((.+)\)\s*$/);
   if (evalMatch) {
-    return nerdamer(evalMatch[1]).evaluate().toString();
+    return toCleanNumber(nerdamer(evalMatch[1]).evaluate());
+  }
+
+  const nMatch = command.match(/^N\((.+)\)\s*$/);
+  if (nMatch) {
+    return toCleanNumber(nerdamer(nMatch[1]).evaluate());
+  }
+
+  const subsMatch = command.match(/^subs\((.+),\s*([a-zA-Z]\w*)\s*,\s*(.+)\)\s*$/);
+  if (subsMatch) {
+    const [, expr, variable, value] = subsMatch;
+    return toCleanNumber(nerdamer(expr).sub(variable, value).evaluate());
   }
 
   if (SYMBOLIC_COMMANDS.test(command)) {
@@ -703,11 +881,19 @@ function runCalculation(command) {
   }
 
   let evalCommand = command;
-  evalCommand = evalCommand.replace(/\b(sin|cos|tan)\(([^()]+)\)/g, '$1(($2)*pi/180)');
-  evalCommand = evalCommand.replace(/\b(asin|acos|atan)\(([^()]+)\)/g, '(($1($2))*180/pi)');
+
+  evalCommand = evalCommand.replace(/\b(sin|cos|tan)\(([^()]+)\)/g, (match, fn, arg) => {
+    const isPureNumber = /^-?\d+(\.\d+)?$/.test(arg.trim());
+    return isPureNumber ? `${fn}((${arg})*pi/180)` : match;
+  });
+
+  evalCommand = evalCommand.replace(/\b(asin|acos|atan)\(([^()]+)\)/g, (match, fn, arg) => {
+    const isPureNumber = /^-?\d+(\.\d+)?$/.test(arg.trim());
+    return isPureNumber ? `((${fn}(${arg}))*180/pi)` : match;
+  });
 
   try {
-    return nerdamer(evalCommand).evaluate().toString();
+    return toCleanNumber(nerdamer(evalCommand).evaluate());
   } catch (e) {
     return nerdamer(command).toString();
   }
@@ -773,12 +959,12 @@ const scanStatus = document.getElementById('scanStatus');
 const scanResult = document.getElementById('scanResult');
 const scanResultActions = document.getElementById('scanResultActions');
 const scanSendToChat = document.getElementById('scanSendToChat');
+const scanCopyBtn = document.getElementById('scanCopyBtn');
 const scanSaveHint = document.getElementById('scanSaveHint');
 
 let cropRect = { x: 0, y: 0, w: 1, h: 1 };
 let dragging = false;
 let dragStart = null;
-
 let mediaStream = null;
 let zoomLevel = 1;
 
@@ -798,7 +984,6 @@ async function startCamera() {
       video: { facingMode: { ideal: 'environment' } },
       audio: false,
     });
-    
     scanVideo.srcObject = mediaStream;
     document.getElementById('zoomRow').style.display = 'flex';
   } catch (e) {
@@ -926,13 +1111,14 @@ scanRetakeBtn.addEventListener('click', () => {
   scanRetakeBtn.style.display = 'none';
   scanSaveAlbumBtn.style.display = 'none';
   scanSaveHint.style.display = 'none';
-  zoomLevel = 1;
-  document.getElementById('zoomSlider').value = 1;
-  applyDigitalZoom();
   ocrBtn.disabled = true;
   qrBtn.disabled = true;
   scanResult.textContent = '';
   scanStatus.textContent = '';
+
+  zoomLevel = 1;
+  document.getElementById('zoomSlider').value = 1;
+  applyDigitalZoom();
 });
 
 scanSaveAlbumBtn.addEventListener('click', () => savePhotoToAlbum(scanPreview.src));
@@ -1208,8 +1394,13 @@ document.getElementById('noteDeleteAll').addEventListener('click', async () => {
 const settingTemp = document.getElementById('settingTemp');
 const settingTempVal = document.getElementById('settingTempVal');
 const settingTokens = document.getElementById('settingTokens');
+const settingTopK = document.getElementById('settingTopK');
+const settingTopP = document.getElementById('settingTopP');
+const settingTopPVal = document.getElementById('settingTopPVal');
 const settingSystemPrompt = document.getElementById('settingSystemPrompt');
-const settingAutoSpeak = document.getElementById('settingAutoSpeak');
+const settingTtsMode = document.getElementById('settingTtsMode');
+const settingHistoryLength = document.getElementById('settingHistoryLength');
+const settingStreaming = document.getElementById('settingStreaming');
 const settingSave = document.getElementById('settingSave');
 const settingReset = document.getElementById('settingReset');
 
@@ -1217,20 +1408,33 @@ function applySettingsToForm() {
   settingTemp.value = settings.temp;
   settingTempVal.textContent = settings.temp;
   settingTokens.value = settings.nPredict;
+  settingTopK.value = settings.topK;
+  settingTopP.value = settings.topP;
+  settingTopPVal.textContent = settings.topP;
   settingSystemPrompt.value = settings.systemPrompt;
-  settingAutoSpeak.checked = settings.autoSpeak;
+  settingTtsMode.value = settings.ttsMode;
+  settingHistoryLength.value = settings.historyLength;
+  settingStreaming.checked = settings.streamingDisplay;
 }
 
 settingTemp.addEventListener('input', () => {
   settingTempVal.textContent = settingTemp.value;
 });
 
+settingTopP.addEventListener('input', () => {
+  settingTopPVal.textContent = settingTopP.value;
+});
+
 settingSave.addEventListener('click', () => {
   settings = {
     temp: parseFloat(settingTemp.value),
     nPredict: parseInt(settingTokens.value, 10) || DEFAULT_SETTINGS.nPredict,
+    topK: parseInt(settingTopK.value, 10) || DEFAULT_SETTINGS.topK,
+    topP: parseFloat(settingTopP.value),
     systemPrompt: settingSystemPrompt.value || DEFAULT_SETTINGS.systemPrompt,
-    autoSpeak: settingAutoSpeak.checked,
+    ttsMode: settingTtsMode.value,
+    historyLength: parseInt(settingHistoryLength.value, 10) ?? DEFAULT_SETTINGS.historyLength,
+    streamingDisplay: settingStreaming.checked,
   };
   saveSettings();
   alert('設定を保存しました');
@@ -1251,8 +1455,6 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
-const VAPID_PUBLIC_KEY = "BPL2Tzy_2Uzkxqq-FnZ5magpsBH-DJLRVYu0M9oLqen8EScOubmitEziOVrgaWBha_0JuPDCcvaDLKvlPZBV4KE";
-
 async function enablePush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('この端末/ブラウザはプッシュ通知に対応していません');
@@ -1262,7 +1464,7 @@ async function enablePush() {
   try {
     const perm = await Notification.requestPermission();
     if (perm !== 'granted') {
-      alert('通知が許可されませんでした（設定アプリで許可してください）');
+      alert('通知が許可されませんでした（設定アプリでこのアプリへの通知を許可してください）');
       return;
     }
 
@@ -1273,6 +1475,12 @@ async function enablePush() {
       ),
     ]);
 
+    const vapidRes = await fetch('/api/vapid-public-key');
+    if (!vapidRes.ok) {
+      throw new Error(`公開鍵の取得に失敗 (status: ${vapidRes.status})`);
+    }
+    const { publicKey } = await vapidRes.json();
+
     let existingSub = await reg.pushManager.getSubscription();
     if (existingSub) {
       await existingSub.unsubscribe();
@@ -1280,13 +1488,13 @@ async function enablePush() {
 
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
 
     const subscribeRes = await fetch('/api/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sub.toJSON()),
+      body: JSON.stringify({ userId: getUserId(), subscription: sub.toJSON() }),
     });
 
     if (!subscribeRes.ok) {
@@ -1328,8 +1536,9 @@ function renderReminders() {
   sorted.forEach((r) => {
     const li = document.createElement('li');
 
+    const modeLabel = r.mode === 'precise' ? '[高精度]' : '';
     const label = document.createElement('span');
-    label.textContent = `${new Date(r.time).toLocaleString('ja-JP')} ${r.title}（残り${r.remainingCount}/${r.totalCount}回）`;
+    label.textContent = `${modeLabel}${new Date(r.time).toLocaleString('ja-JP')} ${r.title}（残り${r.remainingCount}/${r.totalCount}回）`;
 
     const delBtn = document.createElement('button');
     delBtn.textContent = '削除';
@@ -1348,7 +1557,7 @@ function renderReminders() {
 
 async function loadReminders() {
   try {
-    const serverList = await fetch('/api/reminders').then((r) => r.json());
+    const serverList = await fetch(`/api/reminders?userId=${encodeURIComponent(getUserId())}`).then((r) => r.json());
 
     const merged = new Map();
     remindersCache.forEach((r) => merged.set(r.id, r));
@@ -1368,6 +1577,7 @@ async function addReminder() {
   const timeEl = document.getElementById('reminderTime');
   const titleEl = document.getElementById('reminderTitle');
   const countEl = document.getElementById('reminderCount');
+  const preciseEl = document.getElementById('preciseModeToggle');
 
   if (!timeEl.value) {
     alert('日時を選択してください');
@@ -1379,19 +1589,27 @@ async function addReminder() {
   const title = titleEl.value || 'VoiceAI';
 
   const payload = {
+    userId: getUserId(),
     time: epoch,
     title,
     body: '設定した予定の時間になりました',
     count,
+    precise: preciseEl.checked,
   };
 
   try {
-    const created = await fetch('/api/reminders', {
+    const res = await fetch('/api/reminders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).then((r) => r.json());
+    });
 
+    if (res.status === 429) {
+      alert('高精度モードの本日の利用上限に達しました。通常モードで追加してください。');
+      return;
+    }
+
+    const created = await res.json();
     remindersCache.push(created);
     renderReminders();
 
@@ -1405,16 +1623,6 @@ async function addReminder() {
 
 document.getElementById('enablePush').addEventListener('click', enablePush);
 document.getElementById('addReminder').addEventListener('click', addReminder);
-
-/* ==================== 初期化 ==================== */
-
-downloadBtn.addEventListener('click', loadModel);
-sendBtn.addEventListener('click', sendMessage);
-inputEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.isComposing) {
-    sendMessage();
-  }
-});
 
 /* ==================== 広告(Adsterra) ==================== */
 
@@ -1469,6 +1677,10 @@ function updateHeaderState() {
   }
 }
 
+window.addEventListener('online', updateHeaderState);
+window.addEventListener('offline', updateHeaderState);
+updateHeaderState();
+
 function updateSettingsAdState() {
   const slot2 = document.getElementById('adSlot2');
   const offline2 = document.getElementById('offlineLabel2');
@@ -1501,9 +1713,6 @@ function updateSettingsAdState() {
 document.querySelector('.tabBtn[data-page="settingsPage"]').addEventListener('click', updateSettingsAdState);
 window.addEventListener('online', updateSettingsAdState);
 window.addEventListener('offline', updateSettingsAdState);
-window.addEventListener('online', updateHeaderState);
-window.addEventListener('offline', updateHeaderState);
-updateHeaderState();
 
 /* ==================== 検索モード ==================== */
 
@@ -1522,24 +1731,132 @@ document.getElementById('searchModeToggle').addEventListener('click', () => {
 
 /* ==================== 法的ページ ==================== */
 
+let legalReturnPage = 'settingsPage';
+
 document.querySelectorAll('.legalLinkBtn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const key = btn.dataset.legal;
     const res = await fetch(`/legal/${key}.html`);
     const html = await res.text();
     document.getElementById('legalContent').innerHTML = html;
+    legalReturnPage = 'settingsPage';
 
     document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
     document.getElementById('legalPage').classList.add('active');
   });
 });
 
+document.getElementById('calcExamplesBtn').addEventListener('click', () => {
+  document.getElementById('legalContent').innerHTML = buildCalcExamplesHtml();
+  legalReturnPage = 'calcPage';
+
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  document.getElementById('legalPage').classList.add('active');
+});
+
 document.getElementById('legalBackBtn').addEventListener('click', () => {
   document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-  document.getElementById('settingsPage').classList.add('active');
+  document.getElementById(legalReturnPage).classList.add('active');
+});
+
+/* ==================== 初期化 ==================== */
+
+sendBtn.addEventListener('click', sendMessage);
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) {
+    sendMessage();
+  }
+});
+
+downloadBtn.addEventListener('click', loadModel);
+
+async function restoreChatFromHistory() {
+  try {
+    const messages = await dbGetAll('messages');
+    const recent = messages.filter((m) => m.role !== 'photo').slice(-settings.historyLength);
+
+    recent.forEach((m) => {
+      const wrap = document.createElement('div');
+      wrap.className = m.role === 'user' ? 'msgWrap msgWrap-user' : 'msgWrap msgWrap-ai';
+      const col = document.createElement('div');
+      col.className = 'msgCol';
+      const bubble = document.createElement('div');
+      bubble.className = m.role === 'user' ? 'msg msg-user' : 'msg msg-ai';
+      bubble.textContent = m.content;
+      const meta = document.createElement('div');
+      meta.className = 'msgMeta';
+      const time = document.createElement('span');
+      time.textContent = new Date(m.timestamp).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+      meta.appendChild(time);
+      col.appendChild(bubble);
+      col.appendChild(meta);
+      wrap.appendChild(col);
+      logEl.prepend(wrap);
+
+      conversationHistory.push({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content });
+    });
+  } catch (e) {
+    console.error('会話履歴の復元に失敗しました', e);
+  }
+}
+
+document.getElementById('resetEverythingBtn').addEventListener('click', async () => {
+  const ok = confirm('チャット・AIモデル・キャッシュ・会話履歴・お気に入り・メモ・通知設定・計算履歴など、保存されているすべてのデータを削除します。この操作は元に戻せません。よろしいですか？');
+  if (!ok) return;
+
+  logEl.innerHTML = '';
+  conversationHistory = [];
+  calcLogItems = [];
+
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((key) => caches.delete(key)));
+  } catch (e) { console.error(e); }
+
+  try {
+    const root = await navigator.storage.getDirectory();
+    const names = [];
+    for await (const name of root.keys()) { names.push(name); }
+    for (const name of names) { await root.removeEntry(name, { recursive: true }); }
+  } catch (e) { console.error(e); }
+
+  try {
+    await dbClear('messages');
+    await dbClear('favorites');
+    await dbClear('notes');
+  } catch (e) { console.error(e); }
+
+  const userId = localStorage.getItem(USER_ID_KEY);
+  if (userId) {
+    try {
+      const list = await fetch(`/api/reminders?userId=${encodeURIComponent(userId)}`).then((r) => r.json());
+      await Promise.all(list.map((r) => fetch(`/api/reminders/${r.id}`, { method: 'DELETE' })));
+    } catch (e) { console.error(e); }
+
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(SETTINGS_KEY);
+  localStorage.removeItem(USER_ID_KEY);
+
+  alert('すべてのデータを削除しました。ページを再読み込みします。');
+  location.reload();
 });
 
 setupModelSelect();
 setupReminderCountSelect();
 setupCalcCommandsPanel();
 applySettingsToForm();
+restoreChatFromHistory();
+
+// 以前選択したモデルがあれば自動で読み込む(キャッシュ済みならほぼ一瞬で復元される)
+if (localStorage.getItem(STORAGE_KEY)) {
+  loadModel();
+}
